@@ -8,13 +8,13 @@ app.use(express.urlencoded({ extended: true }));
 
 // --- Twilio Config ---
 const accountSid = process.env.TWILIO_ACCOUNT_SID;
-const authToken  = process.env.TWILIO_AUTH_TOKEN;
-const client     = twilio(accountSid, authToken);
+const authToken = process.env.TWILIO_AUTH_TOKEN;
+const client = twilio(accountSid, authToken);
 
 // --- Salesforce Config ---
-const SF_LOGIN_URL      = process.env.SF_LOGIN_URL || 'https://login.salesforce.com';
-const SF_USERNAME       = process.env.SF_USERNAME;
-const SF_PASSWORD       = process.env.SF_PASSWORD;
+const SF_LOGIN_URL = process.env.SF_LOGIN_URL || 'https://login.salesforce.com';
+const SF_USERNAME = process.env.SF_USERNAME;
+const SF_PASSWORD = process.env.SF_PASSWORD;
 const SF_SECURITY_TOKEN = process.env.SF_SECURITY_TOKEN;
 const SF_RECORD_TYPE_ID = '012Uj000004dp1xIAA'; // Business Lending
 
@@ -22,7 +22,12 @@ const SF_RECORD_TYPE_ID = '012Uj000004dp1xIAA'; // Business Lending
 let sfConn = null;
 async function getSalesforceConnection() {
   if (sfConn && sfConn.accessToken) {
-    try { await sfConn.identity(); return sfConn; } catch { sfConn = null; }
+    try {
+      await sfConn.identity();
+      return sfConn;
+    } catch {
+      sfConn = null;
+    }
   }
   sfConn = new jsforce.Connection({ loginUrl: SF_LOGIN_URL });
   await sfConn.login(SF_USERNAME, SF_PASSWORD + SF_SECURITY_TOKEN);
@@ -58,25 +63,18 @@ function parseDollarAmount(raw) {
 }
 
 // --- Helper: parse time-in-business to numeric years ---
-// Handles: "8 months", "2 years", "1.5 years", "18 months", "3", etc.
 function parseYearsInBusiness(raw) {
   if (!raw || !isUsable(raw)) return undefined;
   const lower = raw.toString().toLowerCase().trim();
-
-  // Try "X months" pattern
   const monthMatch = lower.match(/(\d+\.?\d*)\s*month/);
   if (monthMatch) {
     const months = parseFloat(monthMatch[1]);
-    return Math.round(months / 12 * 10) / 10; // e.g. 8 months = 0.7
+    return Math.round(months / 12 * 10) / 10;
   }
-
-  // Try "X years" pattern
   const yearMatch = lower.match(/(\d+\.?\d*)\s*year/);
   if (yearMatch) {
     return parseFloat(yearMatch[1]);
   }
-
-  // Try plain number (assume years)
   const num = parseFloat(lower);
   return isNaN(num) ? undefined : num;
 }
@@ -85,7 +83,6 @@ function parseYearsInBusiness(raw) {
 function normalizeEntityType(raw) {
   if (!raw || !isUsable(raw)) return undefined;
   const lower = raw.toString().toLowerCase().trim();
-
   const mapping = {
     'llc': 'LLC',
     'limited liability company': 'LLC',
@@ -104,8 +101,31 @@ function normalizeEntityType(raw) {
     'non-profit': 'Nonprofit',
     'non profit': 'Nonprofit',
   };
+  return mapping[lower] || raw;
+}
 
-  return mapping[lower] || raw; // Return normalized or original
+// --- Helper: normalize phone to last 10 digits ---
+function normalizePhone(phone) {
+  if (!phone || phone === 'Unknown') return null;
+  const digits = phone.replace(/\D/g, '');
+  return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
+// --- Helper: find existing lead by phone number ---
+async function findExistingLead(conn, phone, recordTypeId) {
+  const last10 = normalizePhone(phone);
+  if (!last10 || last10.length < 10) return null;
+
+  const fmt1 = '(' + last10.slice(0,3) + ') ' + last10.slice(3,6) + '-' + last10.slice(6);
+  const fmt2 = last10.slice(0,3) + '-' + last10.slice(3,6) + '-' + last10.slice(6);
+  const fmt3 = '+1' + last10;
+
+  const query = "SELECT Id, Phone, Status, Comments__c, CreatedDate FROM Lead WHERE RecordTypeId = '" + recordTypeId + "' AND " +
+    "(Phone LIKE '%" + last10 + "%' OR Phone LIKE '%" + fmt1 + "%' OR Phone LIKE '%" + fmt2 + "%' OR Phone LIKE '%" + fmt3 + "%') " +
+    "ORDER BY CreatedDate DESC LIMIT 1";
+
+  const result = await conn.query(query);
+  return result.totalSize > 0 ? result.records[0] : null;
 }
 
 // --- Lookup Lead by Phone Number ---
@@ -116,22 +136,20 @@ app.post('/lookup-lead', async (req, res) => {
       return res.status(200).json({ found: false, message: 'No phone number provided' });
     }
 
-    const digits  = callerPhone.replace(/\D/g, '');
-    const last10  = digits.length > 10 ? digits.slice(-10) : digits;
-    const fmt1    = '(' + last10.slice(0,3) + ') ' + last10.slice(3,6) + '-' + last10.slice(6);
-    const fmt2    = last10.slice(0,3) + '-' + last10.slice(3,6) + '-' + last10.slice(6);
-    const fmt3    = '+1' + last10;
+    const digits = callerPhone.replace(/\D/g, '');
+    const last10 = digits.length > 10 ? digits.slice(-10) : digits;
+    const fmt1 = '(' + last10.slice(0,3) + ') ' + last10.slice(3,6) + '-' + last10.slice(6);
+    const fmt2 = last10.slice(0,3) + '-' + last10.slice(3,6) + '-' + last10.slice(6);
+    const fmt3 = '+1' + last10;
 
     const conn = await getSalesforceConnection();
-    const query =
-      "SELECT Id, FirstName, LastName, Phone, Status, Company, " +
+    const query = "SELECT Id, FirstName, LastName, Phone, Status, Company, " +
       "Buisness_Name__c, Business_Industry__c, " +
       "Comments__c, CreatedDate FROM Lead WHERE RecordTypeId = '" + SF_RECORD_TYPE_ID + "' AND " +
       "(Phone LIKE '%" + last10 + "%' OR Phone LIKE '%" + fmt1 + "%' OR Phone LIKE '%" + fmt2 + "%' OR Phone LIKE '%" + fmt3 + "%') " +
       "ORDER BY CreatedDate DESC LIMIT 1";
 
     const result = await conn.query(query);
-
     if (result.totalSize === 0) {
       return res.status(200).json({ found: false, message: 'No existing lead found' });
     }
@@ -163,18 +181,18 @@ app.post('/call-completed', async (req, res) => {
   const body = req.body;
 
   // Parse fields from ElevenLabs webhook tool
-  const firstName      = body.first_name || body.caller_name || 'Unknown';
-  const lastName       = body.last_name;
-  const callerPhone    = body.caller_phone || 'Unknown';
-  const email          = body.email;
-  const callIntent     = body.call_intent || body.intent || 'Unknown';
-  const businessName   = body.business_name || 'Unknown';
-  const entityType     = body.entity_type || 'Unknown';
+  const firstName = body.first_name || body.caller_name || 'Unknown';
+  const lastName = body.last_name;
+  const callerPhone = body.caller_phone || 'Unknown';
+  const email = body.email;
+  const callIntent = body.call_intent || body.intent || 'Unknown';
+  const businessName = body.business_name || 'Unknown';
+  const entityType = body.entity_type || 'Unknown';
   const timeInBusiness = body.time_in_business || 'Unknown';
   const monthlyRevenue = body.monthly_revenue || 'Unknown';
-  const fundingAmount  = body.funding_amount || 'Unknown';
-  const industry       = body.industry || 'Unknown';
-  const notes          = body.notes;
+  const fundingAmount = body.funding_amount || 'Unknown';
+  const industry = body.industry || 'Unknown';
+  const notes = body.notes;
 
   // --- Console Log ---
   console.log('=============================');
@@ -193,46 +211,39 @@ app.post('/call-completed', async (req, res) => {
   console.log('Notes:', notes);
   console.log('=============================');
 
-  // --- Create Salesforce Lead ---
+  // --- Create or Update Salesforce Lead ---
   try {
     const conn = await getSalesforceConnection();
 
     // Parse numeric values from conversational strings
     const revenueNum = parseDollarAmount(monthlyRevenue);
     const fundingNum = parseDollarAmount(fundingAmount);
-    const yearsNum   = parseYearsInBusiness(timeInBusiness);
+    const yearsNum = parseYearsInBusiness(timeInBusiness);
     const entityNorm = normalizeEntityType(entityType);
 
     // Build call notes for Comments__c (supplementary context only)
-    const commentsLines = [
+    const newComments = [
       isUsable(callIntent) ? `Call Intent: ${callIntent}` : null,
       notes ? `Agent Notes: ${notes}` : null
     ].filter(Boolean).join('\n');
 
     const leadData = {
       RecordTypeId: SF_RECORD_TYPE_ID,
-
-      // --- Contact Info ---
       FirstName: firstName !== 'Unknown' ? firstName : undefined,
-      LastName:  lastName || (firstName !== 'Unknown' ? firstName : 'Unknown Caller'),
-      Phone:     callerPhone !== 'Unknown' ? callerPhone : undefined,
-      Email:     isValidEmail(email) ? email : undefined,
-      Company:   businessName !== 'Unknown' ? businessName : 'Unknown Business',
-      Status:    'New',
+      LastName: lastName || (firstName !== 'Unknown' ? firstName : 'Unknown Caller'),
+      Phone: callerPhone !== 'Unknown' ? callerPhone : undefined,
+      Email: isValidEmail(email) ? email : undefined,
+      Company: businessName !== 'Unknown' ? businessName : 'Unknown Business',
+      Status: 'New',
       LeadSource: 'Phone Inquiry',
-
-      // --- Business Info (mapped to dedicated fields) ---
-      Buisness_Name__c:            isUsable(businessName) ? businessName : undefined,
-      Business_Industry__c:        isUsable(industry) ? industry : undefined,
-      Entity_Type__c:              entityNorm || undefined,
-      Years_In_Business__c:        yearsNum || undefined,
+      Buisness_Name__c: isUsable(businessName) ? businessName : undefined,
+      Business_Industry__c: isUsable(industry) ? industry : undefined,
+      Entity_Type__c: entityNorm || undefined,
+      Years_In_Business__c: yearsNum || undefined,
       Monthly_Recurring_Revenue__c: revenueNum || undefined,
-      AnnualRevenue:               revenueNum ? revenueNum * 12 : undefined,
-      Requested__c:                fundingNum || undefined,
-      Requested_Funding__c:        fundingNum || undefined,
-
-      // --- Call Context ---
-      Comments__c: commentsLines || undefined
+      AnnualRevenue: revenueNum ? revenueNum * 12 : undefined,
+      Requested__c: fundingNum || undefined,
+      Requested_Funding__c: fundingNum || undefined,
     };
 
     // Clean undefined values
@@ -240,22 +251,57 @@ app.post('/call-completed', async (req, res) => {
       if (leadData[key] === undefined) delete leadData[key];
     });
 
-    console.log('Creating SF Lead with data:', JSON.stringify(leadData));
+    // --- Duplicate Handling: Find existing lead by phone, update or create ---
+    const existingLead = await findExistingLead(conn, callerPhone, SF_RECORD_TYPE_ID);
 
-    const result = await conn.request({
-      method: 'POST',
-      url: '/services/data/v' + conn.version + '/sobjects/Lead',
-      body: JSON.stringify(leadData),
-      headers: {
-        'Content-Type': 'application/json',
-        'Sforce-Auto-Assign': 'false'
-      }
-    });
+    if (existingLead) {
+      // UPDATE existing lead
+      const timestamp = new Date().toISOString();
+      const prevComments = existingLead.Comments__c || '';
+      const updatedComments = `[${timestamp}] Repeat call â updated with latest info.\n${newComments}\n---\n${prevComments}`.trim();
 
-    if (result.success) {
-      console.log('Salesforce Lead created:', result);
+      // Remove fields that shouldn't be sent on update
+      delete leadData.RecordTypeId;
+      delete leadData.LeadSource;
+
+      leadData.Comments__c = updatedComments;
+
+      console.log('Updating existing SF Lead:', existingLead.Id);
+      console.log('Update data:', JSON.stringify(leadData));
+
+      const updateResult = await conn.request({
+        method: 'PATCH',
+        url: '/services/data/v' + conn.version + '/sobjects/Lead/' + existingLead.Id,
+        body: JSON.stringify(leadData),
+        headers: {
+          'Content-Type': 'application/json',
+          'Sforce-Auto-Assign': 'false'
+        }
+      });
+
+      console.log('Salesforce Lead UPDATED:', existingLead.Id, updateResult || 'success (204)');
     } else {
-      console.error('Salesforce Lead creation failed:', result.errors);
+      // CREATE new lead
+      leadData.Comments__c = newComments || undefined;
+      if (!leadData.Comments__c) delete leadData.Comments__c;
+
+      console.log('Creating NEW SF Lead with data:', JSON.stringify(leadData));
+
+      const result = await conn.request({
+        method: 'POST',
+        url: '/services/data/v' + conn.version + '/sobjects/Lead',
+        body: JSON.stringify(leadData),
+        headers: {
+          'Content-Type': 'application/json',
+          'Sforce-Auto-Assign': 'false'
+        }
+      });
+
+      if (result.success) {
+        console.log('Salesforce Lead CREATED:', result);
+      } else {
+        console.error('Salesforce Lead creation failed:', result.errors);
+      }
     }
   } catch (err) {
     console.error('Salesforce error:', err.message);
@@ -263,7 +309,7 @@ app.post('/call-completed', async (req, res) => {
 
   // --- Hot Lead SMS Alert ---
   const revenueVal = parseDollarAmount(monthlyRevenue);
-  const timeLower  = (timeInBusiness || '').toLowerCase();
+  const timeLower = (timeInBusiness || '').toLowerCase();
   const isQualified = revenueVal && revenueVal >= 10000 &&
     !timeLower.includes('not yet') &&
     !timeLower.includes('not started') &&
@@ -284,7 +330,7 @@ app.post('/call-completed', async (req, res) => {
           notes ? `Notes: ${notes}` : null
         ].filter(Boolean).join('\n'),
         from: process.env.TWILIO_PHONE_NUMBER,
-        to:   process.env.MY_CELL_NUMBER
+        to: process.env.MY_CELL_NUMBER
       });
       console.log('Hot lead SMS alert sent');
     } catch (err) {
@@ -300,4 +346,3 @@ app.get('/', (req, res) => {
 app.listen(process.env.PORT || 3000, () => {
   console.log('WLL MCA call logger is live');
 });
-
