@@ -241,7 +241,6 @@ app.post('/call-completed', async (req, res) => {
       Entity_Type__c: entityNorm || undefined,
       Years_In_Business__c: yearsNum || undefined,
       Monthly_Recurring_Revenue__c: revenueNum || undefined,
-      AnnualRevenue: revenueNum ? revenueNum * 12 : undefined,
       Requested__c: fundingNum || undefined,
       Requested_Funding__c: fundingNum || undefined,
     };
@@ -258,7 +257,7 @@ app.post('/call-completed', async (req, res) => {
       // UPDATE existing lead
       const timestamp = new Date().toISOString();
       const prevComments = existingLead.Comments__c || '';
-      const updatedComments = `[${timestamp}] Repeat call â updated with latest info.\n${newComments}\n---\n${prevComments}`.trim();
+      const updatedComments = `[${timestamp}] Repeat call Ã¢ÂÂ updated with latest info.\n${newComments}\n---\n${prevComments}`.trim();
 
       // Remove fields that shouldn't be sent on update
       delete leadData.RecordTypeId;
