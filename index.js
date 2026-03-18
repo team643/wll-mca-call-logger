@@ -224,6 +224,7 @@ app.post('/call-completed', async (req, res) => {
     // Build call notes for Comments__c (supplementary context only)
     const newComments = [
       isUsable(callIntent) ? `Call Intent: ${callIntent}` : null,
+      isUsable(entityType) ? `Entity Type: ${entityType}` : null,
       notes ? `Agent Notes: ${notes}` : null
     ].filter(Boolean).join('\n');
 
@@ -238,7 +239,6 @@ app.post('/call-completed', async (req, res) => {
       LeadSource: 'Phone Inquiry',
       Buisness_Name__c: isUsable(businessName) ? businessName : undefined,
       Business_Industry__c: isUsable(industry) ? industry : undefined,
-      Entity_Type__c: entityNorm || undefined,
       Years_In_Business__c: yearsNum || undefined,
       Monthly_Recurring_Revenue__c: revenueNum || undefined,
       Requested__c: fundingNum || undefined,
@@ -257,7 +257,7 @@ app.post('/call-completed', async (req, res) => {
       // UPDATE existing lead
       const timestamp = new Date().toISOString();
       const prevComments = existingLead.Comments__c || '';
-      const updatedComments = `[${timestamp}] Repeat call Ã¢ÂÂ updated with latest info.\n${newComments}\n---\n${prevComments}`.trim();
+      const updatedComments = `[${timestamp}] Repeat call \u2014 updated with latest info.\n${newComments}\n---\n${prevComments}`.trim();
 
       // Remove fields that shouldn't be sent on update
       delete leadData.RecordTypeId;
